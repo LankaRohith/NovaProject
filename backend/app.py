@@ -55,13 +55,19 @@ app = create_app()
 # ---------------------------
 # Socket.IO (signaling)
 # ---------------------------
+# socketio = SocketIO(
+#     app,
+#     cors_allowed_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+#     async_mode="threading",   # works with built-in dev server
+#     # logger=True,             # uncomment for verbose logs
+#     # engineio_logger=True,    # uncomment for verbose logs
+#     # path="/socket.io",       # default is "/socket.io" (matches client)
+# )
+
 socketio = SocketIO(
     app,
-    cors_allowed_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    async_mode="threading",   # works with built-in dev server
-    # logger=True,             # uncomment for verbose logs
-    # engineio_logger=True,    # uncomment for verbose logs
-    # path="/socket.io",       # default is "/socket.io" (matches client)
+    cors_allowed_origins=ALLOWED_ORIGINS,
+    async_mode="threading",
 )
 
 # Track room membership (max 2 peers/room)
@@ -167,4 +173,10 @@ def on_ice_candidate(data):
 #     socketio.run(app, host="0.0.0.0", port=5001, debug=True)
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5001))
-    socketio.run(app, host="0.0.0.0", port=port, debug=False)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        allow_unsafe_werkzeug=True,   # <-- add this
+    )
