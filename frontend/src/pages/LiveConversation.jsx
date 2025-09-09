@@ -16,6 +16,25 @@ export default function LiveConversation() {
   const [room, setRoom] = useState("demo");      // room name
   const [status, setStatus] = useState("Idle");  // ui status line
 
+  // Add near the top (below other consts)
+const TURN_URLS = import.meta.env.VITE_TURN_URLS;              // e.g. "turn:turn.yourhost:3478?transport=udp,turn:turn.yourhost:3478?transport=tcp,turns:turn.yourhost:443?transport=tcp"
+const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME;      // e.g. "nova"
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL;  // e.g. "supersecret"
+
+// Build iceServers from env
+function buildIceServers() {
+  const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+  if (TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL) {
+    servers.push({
+      urls: TURN_URLS.split(",").map((u) => u.trim()),
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
+    });
+  }
+  return servers;
+}
+
+
   // ----- helpers -----
   const logPC = (pc, tag = "PC") => {
     setStatus(`${tag} sig=${pc.signalingState} ice=${pc.iceConnectionState} gather=${pc.iceGatheringState}`);
@@ -27,13 +46,18 @@ export default function LiveConversation() {
   };
 
   const createPeer = () => {
+    // const pc = new RTCPeerConnection({
+    //   iceServers: [
+    //     { urls: "stun:stun.l.google.com:19302" },
+    //     // For cross-network/NAT testing add a TURN server:
+    //     // { urls: "turn:YOUR_TURN_HOST:3478", username: "user", credential: "pass" },
+    //   ],
+    // });
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        // For cross-network/NAT testing add a TURN server:
-        // { urls: "turn:YOUR_TURN_HOST:3478", username: "user", credential: "pass" },
-      ],
-    });
+        iceServers: buildIceServers(),
+        // optional: iceTransportPolicy: "all" (default); keep it so TURN is allowed
+      });
+      
 
     // Trickle ICE to the peer
     pc.onicecandidate = (event) => {
