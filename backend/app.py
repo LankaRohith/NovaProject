@@ -11,7 +11,14 @@ from database import Base, engine
 from models import User, bcrypt  # noqa: F401 (import ensures bcrypt.init_app works)
 from auth import auth_bp
 
+
 load_dotenv()
+
+def read_origins():
+    raw = os.getenv("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+ALLOWED_ORIGINS = read_origins()
 
 
 # ---------------------------
@@ -26,11 +33,9 @@ def create_app():
     bcrypt.init_app(app)
 
     # CORS for REST API
-    CORS(
-        app,
-        resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}},
-        supports_credentials=True,
-    )
+    # CORS for REST
+    CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
+
 
     # DB init
     Base.metadata.create_all(bind=engine)
@@ -158,5 +163,8 @@ def on_ice_candidate(data):
 # ---------------------------
 # Entrypoint
 # ---------------------------
+# if __name__ == "__main__":
+#     socketio.run(app, host="0.0.0.0", port=5001, debug=True)
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
+    port = int(os.getenv("PORT", 5001))
+    socketio.run(app, host="0.0.0.0", port=port, debug=False)
