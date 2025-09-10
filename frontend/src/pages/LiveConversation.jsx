@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import "./LiveConversation.css"; // <— guarantees styles are loaded on this page
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
@@ -35,9 +36,8 @@ export default function LiveConversation() {
   const [muted, setMuted]   = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
 
-  // ---------- helpers ----------
-  const logPC = (pc, tag = "PC") => {
-    setStatus(`${tag} sig=${pc.signalingState} • ice=${pc.iceConnectionState} • gather=${pc.iceGatheringState}`);
+  const logPC = (pc) => {
+    setStatus(`sig=${pc.signalingState} • ice=${pc.iceConnectionState} • gather=${pc.iceGatheringState}`);
   };
 
   const createPeer = () => {
@@ -59,7 +59,6 @@ export default function LiveConversation() {
     pc.oniceconnectionstatechange = () => logPC(pc);
     pc.onicegatheringstatechange  = () => logPC(pc);
     pc.onsignalingstatechange     = () => logPC(pc);
-
     return pc;
   };
 
@@ -67,17 +66,13 @@ export default function LiveConversation() {
     if (socketRef.current) return socketRef.current;
 
     const s = io(SOCKET_HTTP_URL, {
-      transports: ["polling"],   // stable with your backend
+      transports: ["polling"],
       upgrade: false,
       withCredentials: false,
       path: "/socket.io",
     });
 
-    s.on("connect", () => {
-      mySidRef.current = s.id;
-      setStatus("Signaling connected");
-    });
-
+    s.on("connect", () => { mySidRef.current = s.id; setStatus("Signaling connected"); });
     s.on("connect_error", (err) => setStatus(`Signaling error: ${err.message}`));
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
@@ -140,20 +135,17 @@ export default function LiveConversation() {
     return s;
   };
 
-  // ---------- actions ----------
   async function startLocal() {
     if (active) return;
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     streamRef.current = stream;
     if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-    setActive(true);
-    setStatus("Local media started");
+    setActive(true); setStatus("Local media started");
   }
 
   function stopLocal() {
     streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    setActive(false);
+    streamRef.current = null; setActive(false);
   }
 
   function teardownPeerOnly() {
@@ -165,12 +157,7 @@ export default function LiveConversation() {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
   }
 
-  function fullStop() {
-    leaveRoom();
-    teardownPeerOnly();
-    stopLocal();
-    setStatus("Idle");
-  }
+  function fullStop() { leaveRoom(); teardownPeerOnly(); stopLocal(); setStatus("Idle"); }
 
   async function joinRoom() {
     if (!active) { setStatus("Start local media first"); return; }
@@ -187,7 +174,7 @@ export default function LiveConversation() {
 
   async function makeOffer() {
     if (!pcRef.current) return;
-    const offer = await pcRef.current.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+    const offer = await pcRef.current.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
     await pcRef.current.setLocalDescription(offer);
     socketRef.current?.emit("offer", { room, sdp: pcRef.current.localDescription });
   }
@@ -199,7 +186,6 @@ export default function LiveConversation() {
       try { stopLocal(); } catch {}
       try { socketRef.current?.disconnect(); } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function toggleMute() {
@@ -226,12 +212,7 @@ export default function LiveConversation() {
         {/* Controls */}
         <div className="lc__controls">
           <label className="lc__label">Room</label>
-          <input
-            className="lc__input"
-            value={room}
-            onChange={(e) => setRoom(e.target.value.trim())}
-            placeholder="demo"
-          />
+          <input className="lc__input" value={room} onChange={(e)=>setRoom(e.target.value.trim())} placeholder="demo" />
           {!active ? (
             <button className="lc__btn" onClick={startLocal}>Start Local</button>
           ) : (
@@ -251,19 +232,23 @@ export default function LiveConversation() {
           <button className="lc__btn lc__btn--danger" onClick={fullStop}>Full Stop</button>
         </div>
 
-        {/* Videos */}
+        {/* Videos: side-by-side */}
         <div className="lc__grid">
           <section className="lc__panel">
             <header className="lc__panelHead">Local</header>
             <div className="lc__panelBody">
-              <div className="lc__videoBox"><video ref={localVideoRef} className="lc__video" autoPlay playsInline muted /></div>
+              <div className="lc__videoBox">
+                <video ref={localVideoRef} className="lc__video" autoPlay playsInline muted />
+              </div>
             </div>
           </section>
 
           <section className="lc__panel">
             <header className="lc__panelHead">Remote</header>
             <div className="lc__panelBody">
-              <div className="lc__videoBox"><video ref={remoteVideoRef} className="lc__video" autoPlay playsInline /></div>
+              <div className="lc__videoBox">
+                <video ref={remoteVideoRef} className="lc__video" autoPlay playsInline />
+              </div>
             </div>
           </section>
         </div>
