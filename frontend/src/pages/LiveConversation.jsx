@@ -3,19 +3,6 @@ import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-/** ===== TURN (Metered) — hard-coded, order matters =====
- *  Put the most reliable (TLS 443 TCP) first.
- */
-const TURN_USERNAME = "ad95b37e4bf3b0eb9e14533d";
-const TURN_CREDENTIAL = "8I1sZn4tjmFGtb0M";
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },              // extra STUN is fine
-  { urls: "stun:stun.relay.metered.ca:80" },
-  { urls: "turns:standard.relay.metered.ca:443?transport=tcp", username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-  { urls: "turn:standard.relay.metered.ca:80?transport=tcp",  username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-  { urls: "turn:standard.relay.metered.ca:80",                username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-];
-
 export default function LiveConversation() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -24,17 +11,31 @@ export default function LiveConversation() {
   const socketRef = useRef(null);
   const mySidRef = useRef(null);
 
-  // negotiation guards
-  const startedRef = useRef(false);
-  const makingOfferRef = useRef(false);
+  const [active, setActive] = useState(false);   // local media started
+  const [joined, setJoined] = useState(false);   // in signaling room
+  const [room, setRoom] = useState("demo");      // room name
+  const [status, setStatus] = useState("Idle");  // ui status line
 
-  const [active, setActive] = useState(false);
-  const [joined, setJoined] = useState(false);
-  const [room, setRoom] = useState("demo");
-  const [status, setStatus] = useState("Idle");
-  const [muted, setMuted] = useState(false);
-  const [cameraOn, setCameraOn] = useState(true);
+  // Add near the top (below other consts)
+const TURN_URLS = import.meta.env.VITE_TURN_URLS;              // e.g. "turn:turn.yourhost:3478?transport=udp,turn:turn.yourhost:3478?transport=tcp,turns:turn.yourhost:443?transport=tcp"
+const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME;      // e.g. "nova"
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL;  // e.g. "supersecret"
 
+// Build iceServers from env
+function buildIceServers() {
+  const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+  if (TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL) {
+    servers.push({
+      urls: TURN_URLS.split(",").map((u) => u.trim()),
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
+    });
+  }
+  return servers;
+}
+
+
+  // ----- helpers -----
   const logPC = (pc, tag = "PC") => {
     setStatus(`${tag} sig=${pc.signalingState} ice=${pc.iceConnectionState} gather=${pc.iceGatheringState}`);
     console.log(`[${tag}]`, {
@@ -44,43 +45,34 @@ export default function LiveConversation() {
     });
   };
 
-  const resetNegotiationFlags = () => {
-    startedRef.current = false;
-    makingOfferRef.current = false;
-  };
-
   const createPeer = () => {
-    console.log("[ICE] Using servers:", ICE_SERVERS);
-
+    // const pc = new RTCPeerConnection({
+    //   iceServers: [
+    //     { urls: "stun:stun.l.google.com:19302" },
+    //     // For cross-network/NAT testing add a TURN server:
+    //     // { urls: "turn:YOUR_TURN_HOST:3478", username: "user", credential: "pass" },
+    //   ],
+    // });
     const pc = new RTCPeerConnection({
-      iceServers: ICE_SERVERS,
-      iceTransportPolicy: "all", // allow direct if possible; TURNs listed first anyway
-    });
+        iceServers: buildIceServers(),
+        // optional: iceTransportPolicy: "all" (default); keep it so TURN is allowed
+      });
+      
 
+    // Trickle ICE to the peer
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("[ICE] local candidate:", event.candidate.candidate);
-      }
       if (event.candidate && socketRef.current && joined) {
         socketRef.current.emit("ice-candidate", { room, candidate: event.candidate });
       }
     };
 
-    pc.onicecandidateerror = (e) => {
-      console.error("[ICE] candidate error:", e.errorText || e.errorCode, e.url || "");
-    };
-
+    // Remote media arrives here
     pc.ontrack = (event) => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        // iOS/Safari autoplay nudge; fall back to muted if needed so video renders
+        // Nudge playback in case autoplay w/ audio is blocked
         (async () => {
-          try {
-            await remoteVideoRef.current.play();
-          } catch {
-            remoteVideoRef.current.muted = true;
-            try { await remoteVideoRef.current.play(); } catch {}
-          }
+          try { await remoteVideoRef.current.play(); } catch {}
         })();
       }
     };
@@ -96,15 +88,17 @@ export default function LiveConversation() {
     if (socketRef.current) return socketRef.current;
 
     const s = io(SOCKET_HTTP_URL, {
-      transports: ["polling"], // safest across Render/Flask-like backends
+      // Force polling to avoid WS issues with Werkzeug on Python 3.13
+      transports: ["polling"],
       upgrade: false,
+      withCredentials: false,
       path: "/socket.io",
     });
 
     s.on("connect", () => {
       mySidRef.current = s.id;
       setStatus("Signaling connected");
-      console.log("[socket] connected; sid:", mySidRef.current);
+      console.log("[socket] connected, mySid:", mySidRef.current);
     });
 
     s.on("connect_error", (err) => {
@@ -114,25 +108,24 @@ export default function LiveConversation() {
 
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
-    // Informational; don't start negotiation here directly
+    // Informational; also used as a fallback initiator signal
     s.on("joined", ({ room: r, count, sid }) => {
       setStatus(`Joined ${r} (count=${count})`);
       console.log("[socket] joined:", { r, count, sid, me: mySidRef.current });
-      // Fallback: if count==2 and I'm the second joiner, I can start offer
-      if (count === 2 && sid && mySidRef.current === sid && !startedRef.current) {
-        startedRef.current = true;
+      // Fallback: if count==2, the second joiner's SID is sent; make that peer the initiator
+      if (count === 2 && sid && mySidRef.current === sid) {
+        setStatus("I am initiator (joined fallback) — creating offer");
         void makeOffer();
       }
     });
 
-    // Exactly one peer becomes initiator; we then create the offer
+    // Primary initiator signal sent to both peers
     s.on("ready", async ({ initiator }) => {
-      console.log("[socket] ready; initiator:", initiator, "me:", mySidRef.current);
+      console.log("[socket] ready, initiator:", initiator, "me:", mySidRef.current);
       if (!pcRef.current) return;
-
-      if (mySidRef.current === initiator && !startedRef.current) {
-        startedRef.current = true;
+      if (mySidRef.current === initiator) {
         setStatus("I am initiator — creating offer");
+        // tiny delay helps avoid races on some browsers
         await new Promise((r) => setTimeout(r, 100));
         void makeOffer();
       } else {
@@ -140,10 +133,12 @@ export default function LiveConversation() {
       }
     });
 
+    // Offer from the initiator
     s.on("offer", async ({ sdp }) => {
-      console.log("[socket] offer; state=", pcRef.current?.signalingState);
+      console.log("[socket] offer received");
       if (!pcRef.current) return;
       try {
+        // perfect-negotiation: rollback if we're not stable
         if (pcRef.current.signalingState !== "stable") {
           await pcRef.current.setLocalDescription({ type: "rollback" });
         }
@@ -158,14 +153,11 @@ export default function LiveConversation() {
       }
     });
 
+    // Answer from the non-initiator
     s.on("answer", async ({ sdp }) => {
-      console.log("[socket] answer; state=", pcRef.current?.signalingState);
+      console.log("[socket] answer received");
       if (!pcRef.current) return;
       try {
-        if (pcRef.current.signalingState !== "have-local-offer") {
-          console.warn("Ignoring answer; state =", pcRef.current.signalingState);
-          return;
-        }
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
         setStatus("Received answer");
       } catch (e) {
@@ -174,6 +166,7 @@ export default function LiveConversation() {
       }
     });
 
+    // Remote ICE candidate
     s.on("ice-candidate", async ({ candidate }) => {
       console.log("[socket] remote ICE candidate");
       try {
@@ -188,7 +181,9 @@ export default function LiveConversation() {
       teardownPeerOnly();
     });
 
-    s.on("full", () => setStatus("Room is full (max 2)"));
+    s.on("full", () => {
+      setStatus("Room is full (max 2)");
+    });
 
     socketRef.current = s;
     return s;
@@ -211,7 +206,6 @@ export default function LiveConversation() {
   }
 
   function teardownPeerOnly() {
-    resetNegotiationFlags();
     if (pcRef.current) {
       try { pcRef.current.getSenders().forEach((s) => s.track && s.track.stop()); } catch {}
       try { pcRef.current.close(); } catch {}
@@ -249,22 +243,18 @@ export default function LiveConversation() {
       socketRef.current.emit("leave", { room });
     }
     setJoined(false);
-    resetNegotiationFlags();
   }
 
   async function makeOffer() {
-    if (!pcRef.current || makingOfferRef.current) return;
-    try {
-      makingOfferRef.current = true;
-      const offer = await pcRef.current.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      });
-      await pcRef.current.setLocalDescription(offer);
-      socketRef.current?.emit("offer", { room, sdp: pcRef.current.localDescription });
-    } finally {
-      makingOfferRef.current = false;
-    }
+    if (!pcRef.current) return;
+    console.log("[makeOffer] starting");
+    const offer = await pcRef.current.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true,
+    });
+    await pcRef.current.setLocalDescription(offer);
+    console.log("[makeOffer] localDescription set:", pcRef.current.localDescription?.type);
+    socketRef.current?.emit("offer", { room, sdp: pcRef.current.localDescription });
   }
 
   // Cleanup on unmount
@@ -277,6 +267,10 @@ export default function LiveConversation() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // UI bits
+  const [muted, setMuted] = useState(false);
+  const [cameraOn, setCameraOn] = useState(true);
 
   function toggleMute() {
     const audioTrack = streamRef.current?.getAudioTracks()?.[0];
@@ -295,51 +289,46 @@ export default function LiveConversation() {
   }
 
   return (
-    <div className="container" style={{ paddingTop: "6vh", paddingBottom: "6vh" }}>
-      <div className="card">
-        <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>Live Conversation (2-way)</div>
-          <div className="badge">Status: {status}</div>
+    <div className="container py-16">
+      <h1 className="text-3xl font-semibold">Live Conversation (2-way)</h1>
+      <p className="mt-2 text-gray-600">Start local media, join the same room from two browsers (or devices) to establish a P2P call.</p>
+      <div className="mt-2 text-sm">Status: {status}</div>
+
+      <div className="mt-4 flex gap-3 items-center">
+        <label className="text-sm">Room</label>
+        <input
+          className="border rounded p-2"
+          value={room}
+          onChange={(e) => setRoom(e.target.value.trim())}
+          placeholder="demo"
+        />
+        {!active ? (
+          <button className="btn" onClick={startLocal}>Start Local</button>
+        ) : (
+          <button className="btn" onClick={stopLocal}>Stop Local</button>
+        )}
+        {!joined ? (
+          <button className="btn" onClick={joinRoom} disabled={!active}>Join</button>
+        ) : (
+          <button className="btn" onClick={leaveRoom}>Leave</button>
+        )}
+        {active && (
+          <>
+            <button className="btn" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
+            <button className="btn" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
+          </>
+        )}
+        <button className="btn" onClick={fullStop}>Full Stop</button>
+      </div>
+
+      <div className="mt-6 grid md:grid-cols-2 gap-6">
+        <div className="border rounded overflow-hidden">
+          <div className="p-2 text-sm">Local</div>
+          <video ref={localVideoRef} className="w-full aspect-video bg-black" autoPlay playsInline muted />
         </div>
-
-        <div className="card-body">
-          <div className="mt-2" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-            <label style={{ color: "var(--muted)", fontSize: 14 }}>Room</label>
-            <input style={{ maxWidth: 220 }} value={room} onChange={(e) => setRoom(e.target.value.trim())} placeholder="demo" />
-            {!active ? (
-              <button className="btn" onClick={startLocal}>Start Local</button>
-            ) : (
-              <button className="btn secondary" onClick={stopLocal}>Stop Local</button>
-            )}
-            {!joined ? (
-              <button className="btn" onClick={joinRoom} disabled={!active}>Join</button>
-            ) : (
-              <button className="btn ghost" onClick={leaveRoom}>Leave</button>
-            )}
-            {active && (
-              <>
-                <button className="btn ghost" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
-                <button className="btn ghost" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
-              </>
-            )}
-            <button className="btn danger" onClick={fullStop}>Full Stop</button>
-          </div>
-
-          <div className="mt-6 grid-2">
-            <div className="card">
-              <div className="card-header">Local</div>
-              <div className="card-body">
-                <video ref={localVideoRef} className="video" autoPlay playsInline muted />
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="card-header">Remote</div>
-              <div className="card-body">
-                <video ref={remoteVideoRef} className="video" autoPlay playsInline />
-              </div>
-            </div>
-          </div>
+        <div className="border rounded overflow-hidden">
+          <div className="p-2 text-sm">Remote</div>
+          <video ref={remoteVideoRef} className="w-full aspect-video bg-black" autoPlay playsInline />
         </div>
       </div>
     </div>
