@@ -3,10 +3,10 @@ import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-/** TURN settings pulled from .env (the logic you already had) */
-const TURN_URLS        = import.meta.env.VITE_TURN_URLS;         // comma-separated URLs
-const TURN_USERNAME    = import.meta.env.VITE_TURN_USERNAME;
-const TURN_CREDENTIAL  = import.meta.env.VITE_TURN_CREDENTIAL;
+/** TURN from env (unchanged behavior) */
+const TURN_URLS       = import.meta.env.VITE_TURN_URLS;
+const TURN_USERNAME   = import.meta.env.VITE_TURN_USERNAME;
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL;
 
 function buildIceServers() {
   const servers = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -21,29 +21,23 @@ function buildIceServers() {
 }
 
 export default function LiveConversation() {
-  const localVideoRef = useRef(null);
+  const localVideoRef  = useRef(null);
   const remoteVideoRef = useRef(null);
   const streamRef = useRef(null);
-  const pcRef = useRef(null);
+  const pcRef     = useRef(null);
   const socketRef = useRef(null);
-  const mySidRef = useRef(null);
+  const mySidRef  = useRef(null);
 
-  const [active, setActive]   = useState(false);
-  const [joined, setJoined]   = useState(false);
-  const [room, setRoom]       = useState("demo");
-  const [status, setStatus]   = useState("Idle");
-
-  const [muted, setMuted]       = useState(false);
+  const [active, setActive] = useState(false);
+  const [joined, setJoined] = useState(false);
+  const [room, setRoom]     = useState("demo");
+  const [status, setStatus] = useState("Idle");
+  const [muted, setMuted]   = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
 
-  // ---- helpers ----
+  // ---------- helpers ----------
   const logPC = (pc, tag = "PC") => {
-    setStatus(`${tag} sig=${pc.signalingState} ice=${pc.iceConnectionState} gather=${pc.iceGatheringState}`);
-    console.log(`[${tag}]`, {
-      signaling: pc.signalingState,
-      ice: pc.iceConnectionState,
-      gathering: pc.iceGatheringState,
-    });
+    setStatus(`${tag} sig=${pc.signalingState} • ice=${pc.iceConnectionState} • gather=${pc.iceGatheringState}`);
   };
 
   const createPeer = () => {
@@ -62,9 +56,9 @@ export default function LiveConversation() {
       }
     };
 
-    pc.oniceconnectionstatechange = () => logPC(pc, "PC");
-    pc.onicegatheringstatechange = () => logPC(pc, "PC");
-    pc.onsignalingstatechange    = () => logPC(pc, "PC");
+    pc.oniceconnectionstatechange = () => logPC(pc);
+    pc.onicegatheringstatechange  = () => logPC(pc);
+    pc.onsignalingstatechange     = () => logPC(pc);
 
     return pc;
   };
@@ -73,7 +67,7 @@ export default function LiveConversation() {
     if (socketRef.current) return socketRef.current;
 
     const s = io(SOCKET_HTTP_URL, {
-      transports: ["polling"],   // safest with your setup
+      transports: ["polling"],   // stable with your backend
       upgrade: false,
       withCredentials: false,
       path: "/socket.io",
@@ -82,20 +76,15 @@ export default function LiveConversation() {
     s.on("connect", () => {
       mySidRef.current = s.id;
       setStatus("Signaling connected");
-      console.log("[socket] connected, mySid:", mySidRef.current);
     });
 
-    s.on("connect_error", (err) => {
-      setStatus(`Signaling error: ${err.message}`);
-      console.error("[socket] connect_error:", err);
-    });
-
+    s.on("connect_error", (err) => setStatus(`Signaling error: ${err.message}`));
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
     s.on("joined", ({ room: r, count, sid }) => {
-      setStatus(`Joined ${r} (count=${count})`);
+      setStatus(`Joined ${r} — participants: ${count}`);
       if (count === 2 && sid && mySidRef.current === sid) {
-        setStatus("I am initiator (joined fallback) — creating offer");
+        setStatus("I am initiator — creating offer");
         void makeOffer();
       }
     });
@@ -123,7 +112,7 @@ export default function LiveConversation() {
         s.emit("answer", { room, sdp: pcRef.current.localDescription });
         setStatus("Received offer → sent answer");
       } catch (e) {
-        console.error("Error handling offer:", e);
+        console.error("offer error", e);
         setStatus("Error handling offer (see console)");
       }
     });
@@ -134,30 +123,24 @@ export default function LiveConversation() {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
         setStatus("Received answer");
       } catch (e) {
-        console.error("Error handling answer:", e);
+        console.error("answer error", e);
         setStatus("Error handling answer (see console)");
       }
     });
 
     s.on("ice-candidate", async ({ candidate }) => {
       try { await pcRef.current?.addIceCandidate(candidate); }
-      catch (e) { console.error("Error adding ICE candidate", e); }
+      catch (e) { console.error("ICE add error", e); }
     });
 
-    s.on("peer-left", () => {
-      setStatus("Peer left");
-      teardownPeerOnly();
-    });
-
-    s.on("full", () => {
-      setStatus("Room is full (max 2)");
-    });
+    s.on("peer-left", () => { setStatus("Peer left"); teardownPeerOnly(); });
+    s.on("full", () => setStatus("Room is full (max 2)"));
 
     socketRef.current = s;
     return s;
   };
 
-  // ---- actions ----
+  // ---------- actions ----------
   async function startLocal() {
     if (active) return;
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -192,9 +175,8 @@ export default function LiveConversation() {
   async function joinRoom() {
     if (!active) { setStatus("Start local media first"); return; }
     pcRef.current = createPeer();
-    streamRef.current.getTracks().forEach((track) => pcRef.current.addTrack(track, streamRef.current));
-    const s = ensureSocket();
-    s.emit("join", { room });
+    streamRef.current.getTracks().forEach((t) => pcRef.current.addTrack(t, streamRef.current));
+    ensureSocket().emit("join", { room });
     setJoined(true);
   }
 
@@ -221,65 +203,69 @@ export default function LiveConversation() {
   }, []);
 
   function toggleMute() {
-    const audioTrack = streamRef.current?.getAudioTracks()?.[0];
-    if (audioTrack) { audioTrack.enabled = !audioTrack.enabled; setMuted(!audioTrack.enabled); }
+    const a = streamRef.current?.getAudioTracks()?.[0];
+    if (a) { a.enabled = !a.enabled; setMuted(!a.enabled); }
   }
   function toggleCamera() {
-    const videoTrack = streamRef.current?.getVideoTracks()?.[0];
-    if (videoTrack) { videoTrack.enabled = !videoTrack.enabled; setCameraOn(videoTrack.enabled); }
+    const v = streamRef.current?.getVideoTracks()?.[0];
+    if (v) { v.enabled = !v.enabled; setCameraOn(v.enabled); }
   }
 
   return (
-    <div className="nova-page">
-      <div className="nova-card">
-        <div className="nova-card-head">
-          <div className="nova-title">
-            <span className="dot" /> Live Conversation <span className="muted">(2-way)</span>
+    <div className="lc">
+      <div className="lc__wrap">
+        {/* Header */}
+        <div className="lc__head">
+          <div className="lc__title">
+            <span className="lc__dot" />
+            Live Conversation <span className="lc__muted">/ 2-way</span>
           </div>
-          <div className="nova-badge">Status: {status}</div>
+          <div className="lc__status">Status: {status}</div>
         </div>
 
-        <div className="nova-actions">
-          <label className="nova-label">Room</label>
+        {/* Controls */}
+        <div className="lc__controls">
+          <label className="lc__label">Room</label>
           <input
-            className="nova-input"
+            className="lc__input"
             value={room}
             onChange={(e) => setRoom(e.target.value.trim())}
             placeholder="demo"
           />
           {!active ? (
-            <button className="btn" onClick={startLocal}>Start Local</button>
+            <button className="lc__btn" onClick={startLocal}>Start Local</button>
           ) : (
-            <button className="btn btn-secondary" onClick={stopLocal}>Stop Local</button>
+            <button className="lc__btn lc__btn--secondary" onClick={stopLocal}>Stop Local</button>
           )}
           {!joined ? (
-            <button className="btn" onClick={joinRoom} disabled={!active}>Join</button>
+            <button className="lc__btn" onClick={joinRoom} disabled={!active}>Join</button>
           ) : (
-            <button className="btn btn-ghost" onClick={leaveRoom}>Leave</button>
+            <button className="lc__btn lc__btn--ghost" onClick={leaveRoom}>Leave</button>
           )}
           {active && (
             <>
-              <button className="btn btn-ghost" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
-              <button className="btn btn-ghost" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
+              <button className="lc__btn lc__btn--ghost" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
+              <button className="lc__btn lc__btn--ghost" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
             </>
           )}
-          <button className="btn btn-danger" onClick={fullStop}>Full Stop</button>
+          <button className="lc__btn lc__btn--danger" onClick={fullStop}>Full Stop</button>
         </div>
 
-        <div className="nova-grid">
-          <div className="nova-panel">
-            <div className="nova-panel-head">Local</div>
-            <div className="nova-panel-body">
-              <video ref={localVideoRef} className="nova-video" autoPlay playsInline muted />
+        {/* Videos */}
+        <div className="lc__grid">
+          <section className="lc__panel">
+            <header className="lc__panelHead">Local</header>
+            <div className="lc__panelBody">
+              <div className="lc__videoBox"><video ref={localVideoRef} className="lc__video" autoPlay playsInline muted /></div>
             </div>
-          </div>
+          </section>
 
-          <div className="nova-panel">
-            <div className="nova-panel-head">Remote</div>
-            <div className="nova-panel-body">
-              <video ref={remoteVideoRef} className="nova-video" autoPlay playsInline />
+          <section className="lc__panel">
+            <header className="lc__panelHead">Remote</header>
+            <div className="lc__panelBody">
+              <div className="lc__videoBox"><video ref={remoteVideoRef} className="lc__video" autoPlay playsInline /></div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
