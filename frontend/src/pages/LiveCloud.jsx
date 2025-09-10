@@ -1,11 +1,22 @@
 // frontend/src/pages/LiveCloud.jsx
 import { useState } from "react";
 
+const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, ""); // e.g. https://your-render.onrender.com
+
 export default function LiveCloud() {
   const [room, setRoom] = useState("");
   const [src, setSrc] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+
+  async function parseJsonOrThrow(res) {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`${res.status} ${res.statusText} — ${text.slice(0, 160)}`);
+    }
+  }
 
   async function createAndJoin() {
     const clean = room.toLowerCase().replace(/[^a-z0-9-]/g, "");
@@ -13,26 +24,30 @@ export default function LiveCloud() {
       setMsg("Enter a room name (letters, numbers, dash).");
       return;
     }
+    if (!API_BASE) {
+      setMsg("VITE_API_URL is not set on the frontend.");
+      return;
+    }
 
     setBusy(true);
     setMsg("Creating (or finding) room…");
 
     try {
-      // Create the room if it doesn't exist (if it exists, server returns it)
-      const mk = await fetch("/api/daily/rooms", {
+      // Create (idempotent: if exists, backend returns it)
+      const mk = await fetch(`${API_BASE}/api/daily/rooms`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: clean, privacy: "private" }),
       });
-      const mkData = await mk.json();
+      const mkData = await parseJsonOrThrow(mk);
       if (!mk.ok) throw new Error(mkData.error || mk.statusText);
 
       const roomUrl = mkData.room?.url;
-      if (!roomUrl) throw new Error("No room URL returned");
+      if (!roomUrl) throw new Error("No room URL returned from server.");
 
       setMsg("Fetching token…");
-      const tk = await fetch(`/api/daily/token?room=${encodeURIComponent(clean)}`);
-      const tkData = await tk.json();
+      const tk = await fetch(`${API_BASE}/api/daily/token?room=${encodeURIComponent(clean)}`);
+      const tkData = await parseJsonOrThrow(tk);
       if (!tk.ok) throw new Error(tkData.error || tk.statusText);
 
       const token = tkData.token;
