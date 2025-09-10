@@ -48,6 +48,7 @@ const app = express();
 const server = http.createServer(app);
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: ALLOWED_ORIGINS,
@@ -81,6 +82,7 @@ app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
 // POST /api/auth/register  {username, email, password}
 app.post("/api/auth/register", (req, res) => {
+    console.log("REGISTER body:", req.headers["content-type"], req.body);
   const { username, email, password } = req.body || {};
   if (!username || !email || !password) {
     return res.status(400).json({ error: "missing_fields" });
