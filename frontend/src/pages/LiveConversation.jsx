@@ -3,12 +3,13 @@ import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-/** Hard-coded Metered TURN/STUN (your creds) */
+/** Hard-coded Metered TURN/STUN (your creds) + Google STUN */
 const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun.relay.metered.ca:80" },
-  { urls: "turn:standard.relay.metered.ca:80",               username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
-  { urls: "turn:standard.relay.metered.ca:80?transport=tcp", username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
-  { urls: "turn:standard.relay.metered.ca:443",              username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turn:standard.relay.metered.ca:80",                 username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turn:standard.relay.metered.ca:80?transport=tcp",   username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turn:standard.relay.metered.ca:443",                username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
   { urls: "turns:standard.relay.metered.ca:443?transport=tcp", username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
 ];
 
@@ -21,8 +22,8 @@ export default function LiveConversation() {
   const mySidRef = useRef(null);
 
   // negotiation guards
-  const startedRef = useRef(false);       // made the first offer already?
-  const makingOfferRef = useRef(false);   // avoid overlapping offers
+  const startedRef = useRef(false);
+  const makingOfferRef = useRef(false);
 
   const [active, setActive] = useState(false);
   const [joined, setJoined] = useState(false);
@@ -30,6 +31,7 @@ export default function LiveConversation() {
   const [status, setStatus] = useState("Idle");
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
+  const [remoteMuted, setRemoteMuted] = useState(true); // <— start remote muted (iOS autoplay)
 
   const logPC = (pc, tag = "PC") => {
     setStatus(`${tag} sig=${pc.signalingState} ice=${pc.iceConnectionState} gather=${pc.iceGatheringState}`);
@@ -50,25 +52,36 @@ export default function LiveConversation() {
     console.log("[ICE] Using servers:", ICE_SERVERS);
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
-      // TEMP: force TURN so it works across different networks/NATs.
-      // After it works, you can remove this to allow direct/STUN paths.
+      sdpSemantics: "unified-plan",
+      bundlePolicy: "max-bundle",
+      // Force TURN so it works across different networks/NATs.
+      // After it works, remove this to allow direct/STUN paths.
       iceTransportPolicy: "relay",
     });
 
+    // Prepare recv directions up front (Safari-friendly)
+    try {
+      pc.addTransceiver("video", { direction: "sendrecv" });
+      pc.addTransceiver("audio", { direction: "sendrecv" });
+    } catch {
+      // Older browsers may not support explicit addTransceiver
+    }
+
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("[ICE] local candidate:", event.candidate.candidate);
-      }
+      if (event.candidate) console.log("[ICE] local candidate:", event.candidate.candidate);
       if (event.candidate && socketRef.current && joined) {
         socketRef.current.emit("ice-candidate", { room, candidate: event.candidate });
       }
     };
 
     pc.ontrack = (event) => {
+      console.log("[track] remote stream arrived");
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
+        // Make sure the element is muted before play() to satisfy iOS autoplay
+        remoteVideoRef.current.muted = remoteMuted;
         (async () => {
-          try { await remoteVideoRef.current.play(); } catch {}
+          try { await remoteVideoRef.current.play(); } catch (e) { console.warn("remote play() blocked:", e?.message); }
         })();
       }
     };
@@ -120,17 +133,14 @@ export default function LiveConversation() {
 
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
-    // Informational — do NOT start negotiation here
     s.on("joined", ({ room: r, count, sid }) => {
       setStatus(`Joined ${r} (count=${count})`);
       console.log("[socket] joined:", { r, count, sid, me: mySidRef.current });
     });
 
-    // Exactly one peer becomes initiator once
     s.on("ready", async ({ initiator }) => {
       console.log("[socket] ready, initiator:", initiator, "me:", mySidRef.current);
       if (!pcRef.current) return;
-
       if (mySidRef.current === initiator && !startedRef.current) {
         startedRef.current = true;
         setStatus("I am initiator — creating offer");
@@ -141,7 +151,6 @@ export default function LiveConversation() {
       }
     });
 
-    // Offer from initiator
     s.on("offer", async ({ sdp }) => {
       console.log("[socket] offer received; state=", pcRef.current?.signalingState);
       if (!pcRef.current) return;
@@ -160,7 +169,6 @@ export default function LiveConversation() {
       }
     });
 
-    // Answer from non-initiator — accept only in the correct state
     s.on("answer", async ({ sdp }) => {
       console.log("[socket] answer received; state=", pcRef.current?.signalingState);
       if (!pcRef.current) return;
@@ -177,7 +185,6 @@ export default function LiveConversation() {
       }
     });
 
-    // Trickle ICE from remote
     s.on("ice-candidate", async ({ candidate }) => {
       console.log("[socket] remote ICE candidate");
       try {
@@ -223,7 +230,9 @@ export default function LiveConversation() {
       try { pcRef.current.close(); } catch {}
       pcRef.current = null;
     }
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
   }
 
   function fullStop() {
@@ -302,6 +311,17 @@ export default function LiveConversation() {
     }
   }
 
+  async function unmuteRemote() {
+    if (!remoteVideoRef.current) return;
+    try {
+      remoteVideoRef.current.muted = false;
+      setRemoteMuted(false);
+      await remoteVideoRef.current.play();
+    } catch (e) {
+      console.warn("Unable to unmute remote automatically:", e?.message);
+    }
+  }
+
   return (
     <div className="container py-16">
       <h1 className="text-3xl font-semibold">Live Conversation (2-way)</h1>
@@ -333,6 +353,10 @@ export default function LiveConversation() {
           </>
         )}
         <button className="btn" onClick={fullStop}>Full Stop</button>
+        {/* Remote audio unlock for iOS/Chrome autoplay policies */}
+        <button className="btn" onClick={unmuteRemote} disabled={!joined || !remoteMuted}>
+          {remoteMuted ? "Unmute Remote" : "Remote Unmuted"}
+        </button>
       </div>
 
       <div className="mt-6 grid md:grid-cols-2 gap-6">
@@ -342,7 +366,7 @@ export default function LiveConversation() {
         </div>
         <div className="border rounded overflow-hidden">
           <div className="p-2 text-sm">Remote</div>
-          <video ref={remoteVideoRef} className="w-full aspect-video bg-black" autoPlay playsInline />
+          <video ref={remoteVideoRef} className="w-full aspect-video bg-black" autoPlay playsInline muted />
         </div>
       </div>
     </div>
