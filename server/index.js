@@ -12,24 +12,25 @@ const { Server: IOServer } = require("socket.io");
 
 dotenv.config();
 
-/* --- Config / ENV --- */
+/* ---------- Config / ENV ---------- */
 const PORT = process.env.PORT || 5001;
 const JWT_SECRET = process.env.JWT_SECRET_KEY || "dev-secret";
 const DAILY_API_KEY = process.env.DAILY_API_KEY || "";
 const DAILY_ROOM_NAME = process.env.DAILY_ROOM_NAME || "";
 
+// Parse and normalize allowed origins (strip trailing slash)
 function readOrigins() {
   const raw =
     process.env.FRONTEND_ORIGINS ||
     "http://localhost:5173,http://127.0.0.1:5173";
   return raw
     .split(",")
-    .map((s) => s.trim())
+    .map((s) => s.trim().replace(/\/$/, ""))
     .filter(Boolean);
 }
 const ALLOWED_ORIGINS = readOrigins();
 
-/* --- DB (SQLite) --- */
+/* ---------- DB (SQLite) ---------- */
 const dbFile = process.env.DATABASE_PATH || path.join(process.cwd(), "nova.db");
 const db = new Database(dbFile);
 db.pragma("journal_mode = WAL");
@@ -43,20 +44,29 @@ CREATE TABLE IF NOT EXISTS users (
 );
 `);
 
-/* --- App & HTTP server --- */
+/* ---------- App & HTTP server ---------- */
 const app = express();
 const server = http.createServer(app);
 
-app.use(express.json());
+// Basic hardening + parsers
+app.disable("x-powered-by");
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+// CORS that tolerates trailing-slash differences
 app.use(
   cors({
-    origin: ALLOWED_ORIGINS,
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // allow curl / health checks
+      const cleaned = origin.replace(/\/$/, "");
+      if (ALLOWED_ORIGINS.includes(cleaned)) return cb(null, true);
+      return cb(null, false);
+    },
     credentials: true,
   })
 );
 
-/* --- Helpers --- */
+/* ---------- Helpers ---------- */
 function makeToken(user) {
   return jwt.sign(
     { sub: user.id, email: user.email, username: user.username },
@@ -77,62 +87,81 @@ function authMiddleware(req, res, next) {
   }
 }
 
-/* --- REST: same shapes as your Flask backend --- */
+/* ---------- REST (Auth + Health) ---------- */
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-// POST /api/auth/register  {username, email, password}
+// POST /api/auth/register  {username|name, email, password}
 app.post("/api/auth/register", (req, res) => {
-    console.log("REGISTER body:", req.headers["content-type"], req.body);
-  const { username, email, password } = req.body || {};
+  // accept both "username" (new UI) and "name" (older UI)
+  const username = (req.body?.username ?? req.body?.name ?? "").toString().trim();
+  const email = (req.body?.email ?? "").toString().trim().toLowerCase();
+  const password = (req.body?.password ?? "").toString();
+
   if (!username || !email || !password) {
-    return res.status(400).json({ error: "missing_fields" });
+    return res
+      .status(400)
+      .json({ error: "missing_fields", detail: { username: !!username, email: !!email, password: !!password } });
   }
-  const normEmail = String(email).toLowerCase().trim();
 
-  const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(normEmail);
-  if (exists) return res.status(400).json({ error: "email_taken" });
+  try {
+    const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+    if (exists) return res.status(400).json({ error: "email_taken" });
 
-  const hash = bcrypt.hashSync(password, 10);
-  db.prepare(
-    "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)"
-  ).run(username, normEmail, hash);
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare("INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)")
+      .run(username, email, hash);
 
-  return res.json({ message: "User registered" });
+    return res.json({ message: "User registered" });
+  } catch (e) {
+    console.error("REGISTER error:", e);
+    return res.status(500).json({ error: "server_error" });
+  }
 });
 
 // POST /api/auth/login  {email, password} -> {access_token, user}
 app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body || {};
+  const email = (req.body?.email ?? "").toString().trim().toLowerCase();
+  const password = (req.body?.password ?? "").toString();
+
   if (!email || !password) {
     return res.status(400).json({ error: "missing_fields" });
   }
-  const normEmail = String(email).toLowerCase().trim();
 
-  const user = db
-    .prepare("SELECT id, username, email, password_hash FROM users WHERE email = ?")
-    .get(normEmail);
-  if (!user) return res.status(401).json({ error: "invalid_credentials" });
+  try {
+    const user = db
+      .prepare("SELECT id, username, email, password_hash FROM users WHERE email = ?")
+      .get(email);
+    if (!user) return res.status(401).json({ error: "invalid_credentials" });
 
-  const ok = bcrypt.compareSync(password, user.password_hash);
-  if (!ok) return res.status(401).json({ error: "invalid_credentials" });
+    const ok = bcrypt.compareSync(password, user.password_hash);
+    if (!ok) return res.status(401).json({ error: "invalid_credentials" });
 
-  const access_token = makeToken(user);
-  return res.json({
-    access_token,
-    user: { id: user.id, username: user.username, email: user.email },
-  });
+    const access_token = makeToken(user);
+    return res.json({
+      access_token,
+      user: { id: user.id, username: user.username, email: user.email },
+    });
+  } catch (e) {
+    console.error("LOGIN error:", e);
+    return res.status(500).json({ error: "server_error" });
+  }
 });
 
 // GET /api/auth/me (Bearer)
 app.get("/api/auth/me", authMiddleware, (req, res) => {
-  const row = db
-    .prepare("SELECT id, username, email FROM users WHERE id = ?")
-    .get(req.user.sub);
-  if (!row) return res.status(404).json({ error: "user_not_found" });
-  return res.json(row);
+  try {
+    const row = db
+      .prepare("SELECT id, username, email FROM users WHERE id = ?")
+      .get(req.user.sub);
+    if (!row) return res.status(404).json({ error: "user_not_found" });
+    return res.json(row);
+  } catch (e) {
+    console.error("ME error:", e);
+    return res.status(500).json({ error: "server_error" });
+  }
 });
 
-/* --- Daily: optional helpers --- */
+/* ---------- Daily helpers (optional) ---------- */
 
 // POST /api/daily/ensure-room { name }  (creates if missing; returns {name,url})
 app.post("/api/daily/ensure-room", async (req, res) => {
@@ -147,19 +176,28 @@ app.post("/api/daily/ensure-room", async (req, res) => {
 
     // Try GET room
     try {
-      const r = await axios.get(`https://api.daily.co/v1/rooms/${encodeURIComponent(name)}`, { headers });
+      const r = await axios.get(
+        `https://api.daily.co/v1/rooms/${encodeURIComponent(name)}`,
+        { headers }
+      );
       return res.json({ name, url: r.data.url });
     } catch (e) {
-      if (e.response && e.response.status !== 404) throw e;
+      if (!e.response || e.response.status !== 404) throw e;
     }
 
     // Create room (public; switch to privacy: 'private' for tokens only)
-    const body = { name, properties: { enable_screenshare: true, exp: Math.floor(Date.now()/1000) + 3600 } };
+    const body = {
+      name,
+      properties: { enable_screenshare: true, exp: Math.floor(Date.now() / 1000) + 3600 },
+    };
     const r = await axios.post("https://api.daily.co/v1/rooms", body, { headers });
     return res.json({ name, url: r.data.url });
   } catch (err) {
     console.error("ensure-room error", err?.response?.data || err.message);
-    return res.status(502).json({ error: "daily_api_error", detail: err?.response?.data || err.message });
+    return res.status(502).json({
+      error: "daily_api_error",
+      detail: err?.response?.data || err.message,
+    });
   }
 });
 
@@ -171,27 +209,40 @@ app.get("/api/daily/token", async (req, res) => {
     if (!room) return res.status(400).json({ error: "missing_room_name" });
 
     const headers = { Authorization: `Bearer ${DAILY_API_KEY}` };
-    const body = { properties: { room_name: room, is_owner: false, exp: Math.floor(Date.now()/1000) + 10 * 60 } };
+    const body = {
+      properties: {
+        room_name: room,
+        is_owner: false,
+        exp: Math.floor(Date.now() / 1000) + 10 * 60,
+      },
+    };
     const r = await axios.post("https://api.daily.co/v1/meeting-tokens", body, { headers });
     return res.json({ token: r.data.token });
   } catch (err) {
     console.error("daily-token error", err?.response?.data || err.message);
-    return res.status(502).json({ error: "daily_api_error", detail: err?.response?.data || err.message });
+    return res.status(502).json({
+      error: "daily_api_error",
+      detail: err?.response?.data || err.message,
+    });
   }
 });
 
-/* --- Socket.IO signaling (same events as Flask version) --- */
+/* ---------- Socket.IO signaling ---------- */
 const io = new IOServer(server, {
-  cors: { origin: ALLOWED_ORIGINS, methods: ["GET", "POST"], credentials: true },
-  path: "/socket.io"
+  cors: {
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      const cleaned = origin.replace(/\/$/, "");
+      if (ALLOWED_ORIGINS.includes(cleaned)) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: true,
+    methods: ["GET", "POST"],
+  },
+  path: "/socket.io",
 });
 
 const roomMembers = new Map(); // room -> Set(sid)
-
-function roomCount(room) {
-  const set = roomMembers.get(room);
-  return set ? set.size : 0;
-}
 
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
@@ -252,7 +303,7 @@ io.on("connection", (socket) => {
   });
 });
 
-/* --- Start --- */
+/* ---------- Start ---------- */
 server.listen(PORT, () => {
   console.log(`Node backend listening on ${PORT}`);
   console.log("Allowed origins:", ALLOWED_ORIGINS);
