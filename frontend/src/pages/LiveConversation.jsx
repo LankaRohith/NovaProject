@@ -51,65 +51,68 @@ export default function LiveConversation() {
 
   const createPeer = () => {
     console.log("[ICE] Using servers:", ICE_SERVERS);
-
+  
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
-      iceTransportPolicy: "all",   // allow direct if possible; TURNs first in list
-      // sdpSemantics is unified-plan by default on modern browsers
+      // keep "all" so LAN/direct is allowed when possible
+      iceTransportPolicy: "all",
     });
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("[ICE] local candidate:", event.candidate.candidate);
+  
+    // --- prepare a stable remote MediaStream and attach immediately
+    const ensureRemoteVideo = () => {
+      if (remoteVideoRef.current && !remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject = new MediaStream();
       }
+      return /** @type {MediaStream} */ (remoteVideoRef.current?.srcObject);
+    };
+    ensureRemoteVideo();
+  
+    pc.ontrack = (event) => {
+      const remoteStream = ensureRemoteVideo();
+      // Add the track explicitly (Safari-safe)
+      try {
+        remoteStream.addTrack(event.track);
+      } catch (_) { /* track may already be present */ }
+  
+      // Try to start playback; if audio policy blocks, fallback to muted
+      (async () => {
+        try { await remoteVideoRef.current.play(); }
+        catch {
+          remoteVideoRef.current.muted = true;
+          try { await remoteVideoRef.current.play(); } catch {}
+        }
+      })();
+    };
+  
+    pc.onicecandidate = (event) => {
+      if (event.candidate) console.log("[ICE] local candidate:", event.candidate.candidate);
       if (event.candidate && socketRef.current && joined) {
         socketRef.current.emit("ice-candidate", { room, candidate: event.candidate });
       }
     };
-
     pc.onicecandidateerror = (e) => {
       console.error("[ICE] candidate error:", e.errorText || e.errorCode, e.url || "");
     };
-
-    pc.ontrack = (event) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        // Try to ensure playback on iOS
-        (async () => {
-          try { await remoteVideoRef.current.play(); }
-          catch {
-            // If autoplay with audio is blocked, try muted fallback just to visualize video
-            remoteVideoRef.current.muted = true;
-            try { await remoteVideoRef.current.play(); } catch {}
-          }
-        })();
-      }
-    };
-
+  
     pc.oniceconnectionstatechange = () => logPC(pc, "PC");
     pc.onicegatheringstatechange = () => logPC(pc, "PC");
     pc.onsignalingstatechange = () => logPC(pc, "PC");
-
+  
     pc.onconnectionstatechange = async () => {
       console.log("[PC] connectionState =", pc.connectionState);
       if (pc.connectionState === "connected" || pc.connectionState === "completed") {
         const stats = await pc.getStats();
         stats.forEach((r) => {
           if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
-            console.log("[ICE] selected pair:", {
-              local: r.localCandidateId,
-              remote: r.remoteCandidateId,
-              protocol: r.protocol,
-              bytesSent: r.bytesSent,
-              bytesReceived: r.bytesReceived,
-            });
+            console.log("[ICE] selected pair:", { local: r.localCandidateId, remote: r.remoteCandidateId, protocol: r.protocol });
           }
         });
       }
     };
-
+  
     return pc;
   };
+  
 
   const ensureSocket = () => {
     if (socketRef.current) return socketRef.current;
