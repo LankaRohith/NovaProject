@@ -3,19 +3,24 @@ import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-// TURN (Metered or your provider) — set in Vercel env:
+// TURN (Metered or your provider) — set these on Vercel
 const TURN_URLS = import.meta.env.VITE_TURN_URLS || "";
 const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME || "";
 const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL || "";
 
+// Build ICE servers (each TURN URL as its own entry)
 function buildIceServers() {
   const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+
   if (TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL) {
-    servers.push({
-      urls: TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean),
-      username: TURN_USERNAME,
-      credential: TURN_CREDENTIAL,
-    });
+    const urls = TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean);
+    for (const u of urls) {
+      servers.push({
+        urls: u,
+        username: TURN_USERNAME,
+        credential: TURN_CREDENTIAL,
+      });
+    }
   }
   return servers;
 }
@@ -29,13 +34,13 @@ export default function LiveConversation() {
   const mySidRef = useRef(null);
 
   // negotiation guards
-  const startedRef = useRef(false);       // we already started (made the first offer)
-  const makingOfferRef = useRef(false);   // currently crafting an offer
+  const startedRef = useRef(false);       // made the first offer already?
+  const makingOfferRef = useRef(false);   // avoid overlapping offers
 
-  const [active, setActive] = useState(false);   // local media started
-  const [joined, setJoined] = useState(false);   // in signaling room
-  const [room, setRoom] = useState("demo");      // room name
-  const [status, setStatus] = useState("Idle");  // ui status line
+  const [active, setActive] = useState(false);
+  const [joined, setJoined] = useState(false);
+  const [room, setRoom] = useState("demo");
+  const [status, setStatus] = useState("Idle");
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
 
@@ -54,11 +59,13 @@ export default function LiveConversation() {
   };
 
   const createPeer = () => {
-    console.log("[ICE] Using servers:", buildIceServers());
+    const servers = buildIceServers();
+    console.log("[ICE] Using servers:", servers);
+
     const pc = new RTCPeerConnection({
-      iceServers: buildIceServers(),
-      // To prove TURN is working across networks, you can TEMPORARILY force relay:
-      // iceTransportPolicy: "relay",
+      iceServers: servers,
+      // TEMP: force TURN to prove cross-network; remove after it works
+      iceTransportPolicy: "relay",
     });
 
     pc.onicecandidate = (event) => {
@@ -94,7 +101,7 @@ export default function LiveConversation() {
           if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
             console.log("[ICE] selected pair:", { local: r.localCandidateId, remote: r.remoteCandidateId, protocol: r.protocol });
           }
-          if (r.type === "local-candidate") console.log("[ICE] local cand:", r.candidateType, r.protocol);
+          if (r.type === "local-candidate")  console.log("[ICE] local cand:", r.candidateType, r.protocol);
           if (r.type === "remote-candidate") console.log("[ICE] remote cand:", r.candidateType, r.protocol);
         });
       }
@@ -107,8 +114,7 @@ export default function LiveConversation() {
     if (socketRef.current) return socketRef.current;
 
     const s = io(SOCKET_HTTP_URL, {
-      // Using long-polling works everywhere (Render + Flask dev server)
-      transports: ["polling"],
+      transports: ["polling"], // stable with Flask/Render
       upgrade: false,
       withCredentials: false,
       path: "/socket.io",
@@ -127,11 +133,10 @@ export default function LiveConversation() {
 
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
-    // Informational
+    // Informational — do NOT start negotiation here
     s.on("joined", ({ room: r, count, sid }) => {
       setStatus(`Joined ${r} (count=${count})`);
       console.log("[socket] joined:", { r, count, sid, me: mySidRef.current });
-      // IMPORTANT: do NOT start negotiation here (prevents double-offer race)
     });
 
     // Exactly one peer becomes initiator once
@@ -142,7 +147,7 @@ export default function LiveConversation() {
       if (mySidRef.current === initiator && !startedRef.current) {
         startedRef.current = true;
         setStatus("I am initiator — creating offer");
-        await new Promise((r) => setTimeout(r, 100)); // tiny delay helps avoid races
+        await new Promise((r) => setTimeout(r, 100));
         void makeOffer();
       } else {
         setStatus("Waiting for offer from initiator…");
@@ -168,7 +173,7 @@ export default function LiveConversation() {
       }
     });
 
-    // Answer from non-initiator — accept only in the right state
+    // Answer from non-initiator — accept only in the correct state
     s.on("answer", async ({ sdp }) => {
       console.log("[socket] answer received; state=", pcRef.current?.signalingState);
       if (!pcRef.current) return;
