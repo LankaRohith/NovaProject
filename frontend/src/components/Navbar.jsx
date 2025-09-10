@@ -1,48 +1,34 @@
-import { Link, useNavigate } from "react-router-dom";
-import { setAuthToken } from "../utils/api";
-
-
-// import { Link } from "react-router-dom";
-
-// export default function Nav() {
-//   return (
-//     <nav className="flex gap-4">
-//       <Link to="/">Home</Link>
-//       <Link to="/dashboard">Dashboard</Link>
-//       <Link to="/live">Live</Link>
-//       <Link to="/live-cloud">Live (Cloud)</Link> {/* <-- new */}
-//       {/* ... */}
-//     </nav>
-//   );
-// }
-
-
+import { NavLink, useNavigate } from "react-router-dom";
 
 export default function Navbar() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
 
   function logout() {
-    setAuthToken(null);
+    localStorage.removeItem("token");
     navigate("/login");
   }
 
   return (
-    <header className="border-b">
-      <nav className="container flex items-center justify-between py-4">
-        <Link to="/" className="text-xl tracking-widest font-semibold">NOVA</Link>
-        <div className="flex gap-4">
-          <Link to="/" className="hover:underline">Home</Link>
-          <Link to="/live-cloud">Live (Cloud)</Link> 
-          {token && <Link to="/dashboard" className="hover:underline">Dashboard</Link>}
-          {token && <Link to="/live" className="hover:underline">Live</Link>}
-          {!token ? (
-            <Link to="/login" className="btn">Login</Link>
+    <header className="nav">
+      <div className="container nav-inner">
+        <div className="brand" style={{fontSize: 22}}>NOVA</div>
+
+        <nav className="nav-links">
+          <NavLink className="nav-link" to="/">Home</NavLink>
+          <NavLink className="nav-link" to="/live-cloud">Live (Cloud)</NavLink>
+          <NavLink className="nav-link" to="/live">Live</NavLink>
+          <NavLink className="nav-link" to="/dashboard">Dashboard</NavLink>
+        </nav>
+
+        <div className="nav-links">
+          {token ? (
+            <button className="btn ghost" onClick={logout}>Logout</button>
           ) : (
-            <button onClick={logout} className="btn">Logout</button>
+            <NavLink className="btn secondary" to="/login">Login</NavLink>
           )}
         </div>
-      </nav>
+      </div>
     </header>
   );
 }
