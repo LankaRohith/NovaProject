@@ -10,7 +10,8 @@ from flask_socketio import SocketIO, join_room, leave_room, emit
 from database import Base, engine
 from models import User, bcrypt  # noqa: F401 (import ensures bcrypt.init_app works)
 from auth import auth_bp
-
+# from auth import auth_bp
+from daily import daily_bp 
 
 load_dotenv()
 
@@ -42,6 +43,7 @@ def create_app():
 
     # REST routes
     app.register_blueprint(auth_bp)
+    app.register_blueprint(daily_bp)
 
     @app.get("/api/health")
     def health():
