@@ -3,27 +3,14 @@ import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-// TURN (Metered or your provider) — set these on Vercel
-const TURN_URLS = import.meta.env.VITE_TURN_URLS || "";
-const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME || "";
-const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL || "";
-
-// Build ICE servers (each TURN URL as its own entry)
-function buildIceServers() {
-  const servers = [{ urls: "stun:stun.l.google.com:19302" }];
-
-  if (TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL) {
-    const urls = TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean);
-    for (const u of urls) {
-      servers.push({
-        urls: u,
-        username: TURN_USERNAME,
-        credential: TURN_CREDENTIAL,
-      });
-    }
-  }
-  return servers;
-}
+/** Hard-coded Metered TURN/STUN (your creds) */
+const ICE_SERVERS = [
+  { urls: "stun:stun.relay.metered.ca:80" },
+  { urls: "turn:standard.relay.metered.ca:80",               username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turn:standard.relay.metered.ca:80?transport=tcp", username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turn:standard.relay.metered.ca:443",              username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+  { urls: "turns:standard.relay.metered.ca:443?transport=tcp", username: "ad95b37e4bf3b0eb9e14533d", credential: "8I1sZn4tjmFGtb0M" },
+];
 
 export default function LiveConversation() {
   const localVideoRef = useRef(null);
@@ -58,13 +45,13 @@ export default function LiveConversation() {
     makingOfferRef.current = false;
   };
 
+  /** Create PeerConnection using hard-coded TURN */
   const createPeer = () => {
-    const servers = buildIceServers();
-    console.log("[ICE] Using servers:", servers);
-
+    console.log("[ICE] Using servers:", ICE_SERVERS);
     const pc = new RTCPeerConnection({
-      iceServers: servers,
-      // TEMP: force TURN to prove cross-network; remove after it works
+      iceServers: ICE_SERVERS,
+      // TEMP: force TURN so it works across different networks/NATs.
+      // After it works, you can remove this to allow direct/STUN paths.
       iceTransportPolicy: "relay",
     });
 
