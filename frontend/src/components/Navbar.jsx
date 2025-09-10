@@ -1,46 +1,34 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 
 export default function Navbar() {
-  const [open, setOpen] = useState(false);
-  const navigate = useNavigate?.();
+  const navigate = useNavigate();
+  const token = localStorage.getItem("token");
 
-  const close = () => setOpen(false);
-  const logout = () => {
-    try { localStorage.removeItem("token"); } catch {}
-    if (navigate) navigate("/login");
-  };
+  function logout() {
+    localStorage.removeItem("token");
+    navigate("/login");
+  }
 
   return (
-    <header className={`navbar ${open ? "nav--open" : ""}`}>
-      <div className="container nav__inner">
-        <Link to="/" className="nav__brand" onClick={close}>
-          <span className="nav__logo-dot" />
-          <span>NOVA</span>
-        </Link>
+    <header className="nav">
+      <div className="container nav-inner">
+        <div className="brand" style={{fontSize: 22}}>NOVA</div>
 
-        <button
-          className="nav__toggle"
-          aria-label="Open menu"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        >
-          <span />
-          <span />
-          <span />
-        </button>
-
-        <nav className="nav__links" onClick={close}>
-          <Link to="/">Home</Link>
-          <Link to="/live-cloud">Live (Cloud)</Link>
-          <Link to="/live">Live</Link>
-          <Link to="/dashboard">Dashboard</Link>
-          <button className="btn nav__logout" onClick={logout}>Logout</button>
+        <nav className="nav-links">
+          <NavLink className="nav-link" to="/">Home</NavLink>
+          <NavLink className="nav-link" to="/live-cloud">Live (Cloud)</NavLink>
+          <NavLink className="nav-link" to="/live">Live</NavLink>
+          <NavLink className="nav-link" to="/dashboard">Dashboard</NavLink>
         </nav>
-      </div>
 
-      {/* Backdrop for mobile menu */}
-      <div className="nav__backdrop" onClick={close} />
+        <div className="nav-links">
+          {token ? (
+            <button className="btn ghost" onClick={logout}>Logout</button>
+          ) : (
+            <NavLink className="btn secondary" to="/login">Login</NavLink>
+          )}
+        </div>
+      </div>
     </header>
   );
 }
