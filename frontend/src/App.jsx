@@ -10,6 +10,13 @@ function ProtectedRoute({ children }) {
   return token ? children : <Navigate to="/login" replace />;
 }
 
+
+// import { Routes, Route } from "react-router-dom";
+// import LiveConversation from "./pages/LiveConversation";
+import LiveCloud from "./pages/LiveCloud.jsx"; // <-- add
+
+
+
 export default function App() {
   return (
     <div className="min-h-screen bg-white text-black">
@@ -17,6 +24,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/live" element={<LiveConversation />} />
+        <Route path="/live-cloud" element={<LiveCloud />} /> 
         <Route
           path="/dashboard"
           element={
