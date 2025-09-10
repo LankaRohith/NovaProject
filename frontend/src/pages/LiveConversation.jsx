@@ -1,21 +1,20 @@
-// frontend/src/pages/LiveConversation.jsx
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
 const SOCKET_HTTP_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:5001";
 
-/* Hard-coded Metered TURN */
+/** ===== TURN (Metered) — hard-coded, order matters =====
+ *  Put the most reliable (TLS 443 TCP) first.
+ */
 const TURN_USERNAME = "ad95b37e4bf3b0eb9e14533d";
 const TURN_CREDENTIAL = "8I1sZn4tjmFGtb0M";
 const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },              // extra STUN is fine
   { urls: "stun:stun.relay.metered.ca:80" },
   { urls: "turns:standard.relay.metered.ca:443?transport=tcp", username: TURN_USERNAME, credential: TURN_CREDENTIAL },
   { urls: "turn:standard.relay.metered.ca:80?transport=tcp",  username: TURN_USERNAME, credential: TURN_CREDENTIAL },
   { urls: "turn:standard.relay.metered.ca:80",                username: TURN_USERNAME, credential: TURN_CREDENTIAL },
 ];
-
-// Toggle this to false later; keep true while debugging connectivity.
-const FORCE_TURN = true;
 
 export default function LiveConversation() {
   const localVideoRef = useRef(null);
@@ -25,6 +24,7 @@ export default function LiveConversation() {
   const socketRef = useRef(null);
   const mySidRef = useRef(null);
 
+  // negotiation guards
   const startedRef = useRef(false);
   const makingOfferRef = useRef(false);
 
@@ -34,7 +34,6 @@ export default function LiveConversation() {
   const [status, setStatus] = useState("Idle");
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
-  const [remoteMuted, setRemoteMuted] = useState(true);
 
   const logPC = (pc, tag = "PC") => {
     setStatus(`${tag} sig=${pc.signalingState} ice=${pc.iceConnectionState} gather=${pc.iceGatheringState}`);
@@ -45,25 +44,23 @@ export default function LiveConversation() {
     });
   };
 
-  const resetNegotiationFlags = () => { startedRef.current = false; makingOfferRef.current = false; };
+  const resetNegotiationFlags = () => {
+    startedRef.current = false;
+    makingOfferRef.current = false;
+  };
 
   const createPeer = () => {
-    console.log("[ICE] Using servers:", ICE_SERVERS, "force TURN:", FORCE_TURN);
+    console.log("[ICE] Using servers:", ICE_SERVERS);
 
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
-      iceTransportPolicy: FORCE_TURN ? "relay" : "all",
-      bundlePolicy: "max-bundle",
-      rtcpMuxPolicy: "require",
+      iceTransportPolicy: "all", // allow direct if possible; TURNs listed first anyway
     });
 
-    // Ensure receivers exist so iOS/Safari reliably fires ontrack
-    try {
-      pc.addTransceiver("audio", { direction: "recvonly" });
-      pc.addTransceiver("video", { direction: "recvonly" });
-    } catch {}
-
     pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log("[ICE] local candidate:", event.candidate.candidate);
+      }
       if (event.candidate && socketRef.current && joined) {
         socketRef.current.emit("ice-candidate", { room, candidate: event.candidate });
       }
@@ -74,63 +71,65 @@ export default function LiveConversation() {
     };
 
     pc.ontrack = (event) => {
-      const el = remoteVideoRef.current;
-      if (!el) return;
-
-      // Some browsers give event.streams[0], some only event.track
-      if (event.streams && event.streams[0]) {
-        el.srcObject = event.streams[0];
-      } else {
-        const ms = el.srcObject instanceof MediaStream ? el.srcObject : new MediaStream();
-        ms.addTrack(event.track);
-        el.srcObject = ms;
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        // iOS/Safari autoplay nudge; fall back to muted if needed so video renders
+        (async () => {
+          try {
+            await remoteVideoRef.current.play();
+          } catch {
+            remoteVideoRef.current.muted = true;
+            try { await remoteVideoRef.current.play(); } catch {}
+          }
+        })();
       }
-
-      // Allow autoplay by keeping muted initially; user can unmute
-      el.muted = true;
-      (async () => {
-        try { await el.play(); }
-        catch (err) { console.warn("remote play blocked, will require unmute click:", err?.message); }
-      })();
     };
 
     pc.oniceconnectionstatechange = () => logPC(pc, "PC");
     pc.onicegatheringstatechange = () => logPC(pc, "PC");
     pc.onsignalingstatechange = () => logPC(pc, "PC");
 
-    pc.onconnectionstatechange = async () => {
-      console.log("[PC] connectionState =", pc.connectionState);
-      if (pc.connectionState === "connected" || pc.connectionState === "completed") {
-        // Log selected pair (helps confirm TURN vs. direct)
-        const stats = await pc.getStats();
-        stats.forEach((r) => {
-          if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
-            console.log("[ICE] selected:", {
-              local: r.localCandidateId, remote: r.remoteCandidateId, protocol: r.protocol,
-              bytesSent: r.bytesSent, bytesReceived: r.bytesReceived,
-            });
-          }
-        });
-      }
-    };
-
     return pc;
   };
 
   const ensureSocket = () => {
     if (socketRef.current) return socketRef.current;
-    const s = io(SOCKET_HTTP_URL, { transports: ["polling"], upgrade: false, path: "/socket.io" });
 
-    s.on("connect", () => { mySidRef.current = s.id; setStatus("Signaling connected"); });
+    const s = io(SOCKET_HTTP_URL, {
+      transports: ["polling"], // safest across Render/Flask-like backends
+      upgrade: false,
+      path: "/socket.io",
+    });
+
+    s.on("connect", () => {
+      mySidRef.current = s.id;
+      setStatus("Signaling connected");
+      console.log("[socket] connected; sid:", mySidRef.current);
+    });
+
+    s.on("connect_error", (err) => {
+      setStatus(`Signaling error: ${err.message}`);
+      console.error("[socket] connect_error:", err);
+    });
+
     s.on("disconnect", () => setStatus("Signaling disconnected"));
 
+    // Informational; don't start negotiation here directly
     s.on("joined", ({ room: r, count, sid }) => {
       setStatus(`Joined ${r} (count=${count})`);
       console.log("[socket] joined:", { r, count, sid, me: mySidRef.current });
+      // Fallback: if count==2 and I'm the second joiner, I can start offer
+      if (count === 2 && sid && mySidRef.current === sid && !startedRef.current) {
+        startedRef.current = true;
+        void makeOffer();
+      }
     });
 
+    // Exactly one peer becomes initiator; we then create the offer
     s.on("ready", async ({ initiator }) => {
+      console.log("[socket] ready; initiator:", initiator, "me:", mySidRef.current);
       if (!pcRef.current) return;
+
       if (mySidRef.current === initiator && !startedRef.current) {
         startedRef.current = true;
         setStatus("I am initiator — creating offer");
@@ -142,36 +141,60 @@ export default function LiveConversation() {
     });
 
     s.on("offer", async ({ sdp }) => {
+      console.log("[socket] offer; state=", pcRef.current?.signalingState);
       if (!pcRef.current) return;
       try {
-        if (pcRef.current.signalingState !== "stable") await pcRef.current.setLocalDescription({ type: "rollback" });
+        if (pcRef.current.signalingState !== "stable") {
+          await pcRef.current.setLocalDescription({ type: "rollback" });
+        }
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
         s.emit("answer", { room, sdp: pcRef.current.localDescription });
         setStatus("Received offer → sent answer");
-      } catch (e) { console.error("offer err", e); setStatus("Error handling offer (see console)"); }
+      } catch (e) {
+        console.error("Error handling offer:", e);
+        setStatus("Error handling offer (see console)");
+      }
     });
 
     s.on("answer", async ({ sdp }) => {
+      console.log("[socket] answer; state=", pcRef.current?.signalingState);
       if (!pcRef.current) return;
-      if (pcRef.current.signalingState !== "have-local-offer") return;
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
-      setStatus("Received answer");
+      try {
+        if (pcRef.current.signalingState !== "have-local-offer") {
+          console.warn("Ignoring answer; state =", pcRef.current.signalingState);
+          return;
+        }
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+        setStatus("Received answer");
+      } catch (e) {
+        console.error("Error handling answer:", e);
+        setStatus("Error handling answer (see console)");
+      }
     });
 
     s.on("ice-candidate", async ({ candidate }) => {
-      try { await pcRef.current?.addIceCandidate(candidate); }
-      catch (e) { console.error("ICE add error", e); }
+      console.log("[socket] remote ICE candidate");
+      try {
+        await pcRef.current?.addIceCandidate(candidate);
+      } catch (e) {
+        console.error("Error adding ICE candidate", e);
+      }
     });
 
-    s.on("peer-left", () => { setStatus("Peer left"); teardownPeerOnly(); });
+    s.on("peer-left", () => {
+      setStatus("Peer left");
+      teardownPeerOnly();
+    });
+
     s.on("full", () => setStatus("Room is full (max 2)"));
 
-    socketRef.current = s; return s;
+    socketRef.current = s;
+    return s;
   };
 
-  // --- actions ---
+  // ----- actions -----
   async function startLocal() {
     if (active) return;
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -197,10 +220,18 @@ export default function LiveConversation() {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
   }
 
-  function fullStop() { leaveRoom(); teardownPeerOnly(); stopLocal(); setStatus("Idle"); }
+  function fullStop() {
+    leaveRoom();
+    teardownPeerOnly();
+    stopLocal();
+    setStatus("Idle");
+  }
 
   async function joinRoom() {
-    if (!active) { setStatus("Start local media first"); return; }
+    if (!active) {
+      setStatus("Start local media first");
+      return;
+    }
     pcRef.current = createPeer();
 
     // Add local tracks BEFORE any offer
@@ -214,7 +245,9 @@ export default function LiveConversation() {
   }
 
   function leaveRoom() {
-    if (socketRef.current && joined) socketRef.current.emit("leave", { room });
+    if (socketRef.current && joined) {
+      socketRef.current.emit("leave", { room });
+    }
     setJoined(false);
     resetNegotiationFlags();
   }
@@ -223,12 +256,18 @@ export default function LiveConversation() {
     if (!pcRef.current || makingOfferRef.current) return;
     try {
       makingOfferRef.current = true;
-      const offer = await pcRef.current.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      const offer = await pcRef.current.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pcRef.current.setLocalDescription(offer);
       socketRef.current?.emit("offer", { room, sdp: pcRef.current.localDescription });
-    } finally { makingOfferRef.current = false; }
+    } finally {
+      makingOfferRef.current = false;
+    }
   }
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       try { leaveRoom(); } catch {}
@@ -236,22 +275,23 @@ export default function LiveConversation() {
       try { stopLocal(); } catch {}
       try { socketRef.current?.disconnect(); } catch {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function toggleMute() {
-    const a = streamRef.current?.getAudioTracks()?.[0];
-    if (a) { a.enabled = !a.enabled; setMuted(!a.enabled); }
+    const audioTrack = streamRef.current?.getAudioTracks()?.[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setMuted(!audioTrack.enabled);
+    }
   }
+
   function toggleCamera() {
-    const v = streamRef.current?.getVideoTracks()?.[0];
-    if (v) { v.enabled = !v.enabled; setCameraOn(v.enabled); }
-  }
-  function unmuteRemote() {
-    const el = remoteVideoRef.current;
-    if (!el) return;
-    el.muted = false;
-    setRemoteMuted(false);
-    el.play().catch(() => {});
+    const videoTrack = streamRef.current?.getVideoTracks()?.[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setCameraOn(videoTrack.enabled);
+    }
   }
 
   return (
@@ -265,13 +305,23 @@ export default function LiveConversation() {
         <div className="card-body">
           <div className="mt-2" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             <label style={{ color: "var(--muted)", fontSize: 14 }}>Room</label>
-            <input style={{ maxWidth: 220 }} value={room} onChange={(e)=>setRoom(e.target.value.trim())} placeholder="demo" />
-            {!active ? <button className="btn" onClick={startLocal}>Start Local</button> : <button className="btn secondary" onClick={stopLocal}>Stop Local</button>}
-            {!joined ? <button className="btn" onClick={joinRoom} disabled={!active}>Join</button> : <button className="btn ghost" onClick={leaveRoom}>Leave</button>}
-            {active && (<>
-              <button className="btn ghost" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
-              <button className="btn ghost" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
-            </>)}
+            <input style={{ maxWidth: 220 }} value={room} onChange={(e) => setRoom(e.target.value.trim())} placeholder="demo" />
+            {!active ? (
+              <button className="btn" onClick={startLocal}>Start Local</button>
+            ) : (
+              <button className="btn secondary" onClick={stopLocal}>Stop Local</button>
+            )}
+            {!joined ? (
+              <button className="btn" onClick={joinRoom} disabled={!active}>Join</button>
+            ) : (
+              <button className="btn ghost" onClick={leaveRoom}>Leave</button>
+            )}
+            {active && (
+              <>
+                <button className="btn ghost" onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</button>
+                <button className="btn ghost" onClick={toggleCamera}>{cameraOn ? "Camera Off" : "Camera On"}</button>
+              </>
+            )}
             <button className="btn danger" onClick={fullStop}>Full Stop</button>
           </div>
 
@@ -284,14 +334,7 @@ export default function LiveConversation() {
             </div>
 
             <div className="card">
-              <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span>Remote</span>
-                {remoteMuted && (
-                  <button className="btn ghost" onClick={unmuteRemote} title="Enable remote audio">
-                    Unmute Remote
-                  </button>
-                )}
-              </div>
+              <div className="card-header">Remote</div>
               <div className="card-body">
                 <video ref={remoteVideoRef} className="video" autoPlay playsInline />
               </div>
