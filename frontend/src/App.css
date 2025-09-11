@@ -1,3 +1,120 @@
+/* ---------- Global Reset + Theme ---------- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: radial-gradient(1200px 600px at 10% -10%, rgba(89, 87, 255, .14), transparent 60%),
+              radial-gradient(900px 480px at 110% 10%, rgba(255, 95, 175, .10), transparent 55%),
+              linear-gradient(180deg, #0c1226 0%, #0a0f1f 100%);
+  color: #e9eefb;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+}
+
+/* CSS variables for the whole app */
+:root{
+  --bg-surface: rgba(18, 22, 34, .72);
+  --bg-surface-2: rgba(12, 16, 28, .55);
+  --stroke: rgba(255,255,255,.08);
+  --text: #e9eefb;
+  --muted: #9aa3b2;
+
+  --btn-bg: #1b2130;
+  --btn-bd: #2a3244;
+  --btn-bg-hover:#232b3c;
+  --btn-bd-hover:#3a445a;
+
+  --btn-danger:#e14b64;
+  --btn-danger-hover:#d43e57;
+
+  --radius: 14px;
+  --shadow: 0 10px 40px rgba(0,0,0,.35);
+}
+
+/* ---------- Containers / Cards / Utilities ---------- */
+.container {
+  width: min(1120px, 100%);
+  margin-inline: auto;
+  padding: clamp(12px, 2.5vw, 32px) clamp(12px, 3vw, 20px);
+}
+
+.card {
+  background: linear-gradient(180deg, var(--bg-surface), var(--bg-surface-2));
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  padding: clamp(14px, 2.4vw, 22px);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: clamp(10px, 1.6vw, 16px);
+}
+@media (max-width: 900px){ .grid-2 { grid-template-columns: 1fr; }}
+
+/* ---------- Global buttons & inputs (applies across ALL pages) ---------- */
+button, .btn {
+  cursor: pointer;
+  border: 1px solid var(--btn-bd);
+  background: var(--btn-bg);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  transition: background .15s ease, border-color .15s ease, transform .05s ease, opacity .15s ease;
+}
+button:hover, .btn:hover { background: var(--btn-bg-hover); border-color: var(--btn-bd-hover); }
+button:active, .btn:active { transform: translateY(1px); }
+button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
+
+.btn--ghost { background: transparent; }
+.btn--danger { background: var(--btn-danger); border-color: transparent; }
+.btn--danger:hover { background: var(--btn-danger-hover); }
+
+input[type="text"], input[type="email"], input[type="password"], .input, textarea, select {
+  width: 100%;
+  max-width: 360px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--stroke);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: none;
+}
+input::placeholder, textarea::placeholder { color: #8991a3; }
+input:focus, textarea:focus, select:focus { border-color: var(--btn-bd-hover); box-shadow: 0 0 0 3px rgba(88,193,255,.08); }
+
+/* ---------- Top nav (works with most simple nav markups) ---------- */
+nav, .navbar, header .nav, header nav {
+  width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: linear-gradient(180deg, rgba(14,18,30,.8), rgba(14,18,30,.5));
+  border-bottom: 1px solid var(--stroke);
+  backdrop-filter: blur(8px);
+}
+.nav__inner { display:flex; gap: 16px; align-items:center; justify-content:space-between; }
+.nav__brand { display:flex; align-items:center; gap:10px; font-weight:900; letter-spacing:.4px; }
+.nav__links { display:flex; gap: clamp(10px, 2vw, 18px); align-items:center; flex-wrap: wrap; }
+.nav__links a, .nav__links button { color: var(--text); text-decoration:none; }
+.nav__links a:hover { opacity:.9; }
+.nav__logout { padding: 8px 12px; }
+
+/* ---------- Auth pages (Login/Register) ---------- */
+.auth { display:grid; place-items:center; }
+.auth .card { width: min(440px, 100%); }
+.auth .actions { display:flex; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- Daily / Live (Cloud) generic rows ---------- */
+.row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+
 /* ===== Centered layout for Home ===== */
 .hp--center { text-align: center; }
 .hp--center .hp-hero {
