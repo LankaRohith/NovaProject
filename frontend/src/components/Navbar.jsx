@@ -1,3 +1,4 @@
+// frontend/src/components/NavBar.jsx
 import { NavLink, useNavigate } from "react-router-dom";
 
 export default function NavBar() {
@@ -19,7 +20,6 @@ export default function NavBar() {
         </nav>
 
         <div className="nav__end">
-          {/* keep your existing logout handler if you had one */}
           <NavLink to="/login" className="btn btn--ghost">Logout</NavLink>
         </div>
       </div>
