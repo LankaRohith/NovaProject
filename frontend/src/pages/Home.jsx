@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 export default function Home() {
   return (
-    <main className="hp">
+    <main className="hp hp--center">
       {/* HERO */}
       <section className="hp-hero">
         <div className="hp-hero__copy">
@@ -62,7 +62,7 @@ export default function Home() {
           <div className="hp-card__icon">📊</div>
           <h3 className="hp-card__title">Dashboard</h3>
           <p className="hp-card__text">
-            Manage sessions and profile. Built with a clean, responsive UI.
+            Manage sessions and profile. Clean, responsive UI.
           </p>
           <Link to="/dashboard" className="hp-card__link">Go to Dashboard →</Link>
         </article>
